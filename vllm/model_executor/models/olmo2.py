@@ -41,7 +41,7 @@ from vllm.distributed.communication_op import tensor_model_parallel_all_gather
 from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
 from vllm.distributed.utils import split_tensor_along_last_dim
 from vllm.model_executor.layers.activation import SiluAndMul
-from vllm.model_executor.layers.layernorm import RMSNorm
+from vllm.model_executor.layers.layernorm import RMSNorm, fused_add_rms_norm
 from vllm.model_executor.layers.linear import (MergedColumnParallelLinear,
                                                QKVParallelLinear,
                                                RowParallelLinear)
@@ -255,17 +255,23 @@ class Olmo2DecoderLayer(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        # Attention block.
         residual = hidden_states
         hidden_states = self.self_attn(positions, hidden_states)
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = hidden_states + residual
+        hidden_states, _ = fused_add_rms_norm(
+            hidden_states,
+            residual,
+            self.post_attention_layernorm.weight.data,
+            self.post_attention_layernorm.variance_epsilon
+        )
 
-        # MLP block.
         residual = hidden_states
         hidden_states = self.mlp(hidden_states)
-        hidden_states = self.post_feedforward_layernorm(hidden_states)
-        hidden_states = residual + hidden_states
+        hidden_states, _ = fused_add_rms_norm(
+            hidden_states,
+            residual,
+            self.post_feedforward_layernorm.weight.data,
+            self.post_feedforward_layernorm.variance_epsilon
+        )
         return hidden_states
 
 
